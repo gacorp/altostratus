@@ -177,16 +177,12 @@ impl Screen {
     }
 
     pub fn fit_to_terminal(&mut self) {
-        let (terminal_width, terminal_height) = match terminal::size() {
-            Ok(dim) => dim,
-            Err(_) => DEFAULT_TERMINAL_DIMENSIONS,
-        };
+        let (terminal_width, terminal_height) = terminal::size()
+            .unwrap_or(DEFAULT_TERMINAL_DIMENSIONS);
 
         // Only resize if terminal size has actually changed
-        if let Some((cached_width, cached_height)) = self.cached_terminal_size {
-            if cached_width == terminal_width && cached_height == terminal_height {
-                return; // No change, skip resize
-            }
+        if self.cached_terminal_size == Some((terminal_width, terminal_height)) {
+            return; // No change, skip resize
         }
 
         // Update cache and resize
@@ -195,16 +191,16 @@ impl Screen {
     }
 
     pub fn write(&mut self, val: bool, point: &Point2D) {
-        let x_in_bounds = 0 < point.x && point.x < self.width as i32;
-        let y_in_bounds = 0 < point.y && point.y < self.height as i32;
+        let x_in_bounds = (0..self.width as i32).contains(&point.x);
+        let y_in_bounds = (0..self.height as i32).contains(&point.y);
         if x_in_bounds && y_in_bounds {
             self.content[point.y as usize][point.x as usize] = val;
         }
     }
 
     pub fn write_colored(&mut self, val: bool, point: &Point2D, color: Color) {
-        let x_in_bounds = 0 < point.x && point.x < self.width as i32;
-        let y_in_bounds = 0 < point.y && point.y < self.height as i32;
+        let x_in_bounds = (0..self.width as i32).contains(&point.x);
+        let y_in_bounds = (0..self.height as i32).contains(&point.y);
         if x_in_bounds && y_in_bounds {
             self.content[point.y as usize][point.x as usize] = val;
             self.colors[point.y as usize][point.x as usize] = color;
