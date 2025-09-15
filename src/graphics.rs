@@ -224,14 +224,12 @@ impl Screen {
         }
 
         if height > self.height {
-            self.content.extend(vec![
-                vec![false; width as usize];
-                (height - self.height) as usize
-            ]);
-            self.colors.extend(vec![
-                vec![Color::Default; width as usize];
-                (height - self.height) as usize
-            ]);
+            self.content.extend(
+                (0..(height - self.height) as usize).map(|_| vec![false; width as usize])
+            );
+            self.colors.extend(
+                (0..(height - self.height) as usize).map(|_| vec![Color::Default; width as usize])
+            );
         } else {
             self.content.truncate(height as usize);
             self.colors.truncate(height as usize);
@@ -240,10 +238,10 @@ impl Screen {
 
         if width > self.width {
             for row in self.content.iter_mut() {
-                row.extend(vec![false; (width - self.width) as usize]);
+                row.extend((0..(width - self.width) as usize).map(|_| false));
             }
             for row in self.colors.iter_mut() {
-                row.extend(vec![Color::Default; (width - self.width) as usize]);
+                row.extend((0..(width - self.width) as usize).map(|_| Color::Default));
             }
         } else {
             for row in self.content.iter_mut() {
@@ -257,9 +255,9 @@ impl Screen {
     }
 
     pub fn line(&mut self, start: &Point2D, end: &Point2D) {
-        let delta_x = (end.x - start.x).abs();
+        let delta_x = start.x.abs_diff(end.x) as i32;
         let step_x: i32 = if start.x < end.x { 1 } else { -1 };
-        let delta_y = -(end.y - start.y).abs();
+        let delta_y = -(start.y.abs_diff(end.y) as i32);
         let step_y: i32 = if start.y < end.y { 1 } else { -1 };
         let mut err = delta_x + delta_y;
 
@@ -268,16 +266,16 @@ impl Screen {
 
         self.write(true, &Point2D::new(x, y));
 
-        while !(x == end.x && y == end.y) {
+        while x != end.x || y != end.y {
             self.write(true, &Point2D::new(x, y));
             let curr_err = err;
 
-            if 2 * curr_err >= delta_y {
+            if curr_err * 2 >= delta_y {
                 err += delta_y;
                 x += step_x;
             }
 
-            if 2 * curr_err <= delta_x {
+            if curr_err * 2 <= delta_x {
                 err += delta_x;
                 y += step_y;
             }
