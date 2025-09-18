@@ -439,7 +439,7 @@ impl Screen {
     }
 
     fn export_color(&self) -> String {
-        // This is the current export_to_string implementation
+        // Export the content with ANSI color codes (color-specific export)
         let chunked_rows = self.content.chunks(4);
         let chunked_color_rows = self.colors.chunks(4);
 
