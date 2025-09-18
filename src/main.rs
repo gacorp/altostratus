@@ -25,6 +25,7 @@ struct CommandState {
     active: bool,
     buffer: String,
     error_message: Option<String>,
+    success_message: Option<String>,
 }
 
 impl CommandState {
@@ -33,6 +34,7 @@ impl CommandState {
             active: false,
             buffer: String::new(),
             error_message: None,
+            success_message: None,
         }
     }
 
@@ -40,6 +42,7 @@ impl CommandState {
         self.active = true;
         self.buffer.clear();
         self.error_message = None;
+        self.success_message = None;
     }
 
     fn exit_command_mode(&mut self) {
@@ -55,7 +58,7 @@ impl CommandState {
         self.buffer.pop();
     }
 
-    fn execute_command(&mut self, point_cloud: &mut PointCloud) -> bool {
+    fn execute_command(&mut self, point_cloud: &mut PointCloud, camera: &Camera) -> bool {
         let command = self.buffer.trim();
 
         if command.starts_with("load ") {
@@ -81,6 +84,24 @@ impl CommandState {
                     return false;
                 }
             }
+        } else if command.starts_with("export") {
+            let (path, format) = self.parse_export_command(command);
+            match self.export_view(camera, &path, format) {
+                Ok(_) => {
+                    let format_desc = match format {
+                        graphics::ExportFormat::Plain => "plain text",
+                        graphics::ExportFormat::Color => "colored text",
+                        graphics::ExportFormat::Html => "HTML",
+                    };
+                    self.success_message = Some(format!("Exported {} to: {}", format_desc, path));
+                    self.exit_command_mode();
+                    return false;
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Export failed: {}", e));
+                    return false;
+                }
+            }
         } else if command == "clear" {
             // Clear all points from the point cloud
             point_cloud.points.clear();
@@ -98,12 +119,78 @@ impl CommandState {
         false
     }
 
+    fn export_view(&self, camera: &Camera, path: &str, format: graphics::ExportFormat) -> Result<(), Box<dyn error::Error>> {
+        let content = camera.screen.export_to_string(format);
+        fs::write(path, content)?;
+        Ok(())
+    }
+
+    fn parse_export_command(&self, command: &str) -> (String, graphics::ExportFormat) {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        
+        if parts.len() == 1 {
+            // Just "/export" - default format (plain) with timestamp
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (format!("altostratus_export_{}.txt", timestamp), graphics::ExportFormat::Plain)
+        } else if parts.len() == 2 {
+            let arg = parts[1];
+            if arg == "--color" {
+                // "/export --color" - color format with timestamp
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                (format!("altostratus_export_color_{}.txt", timestamp), graphics::ExportFormat::Color)
+            } else if arg == "--html" {
+                // "/export --html" - HTML format with timestamp
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                (format!("altostratus_export_{}.html", timestamp), graphics::ExportFormat::Html)
+            } else {
+                // "/export filename" - assume plain format
+                (arg.to_string(), graphics::ExportFormat::Plain)
+            }
+        } else if parts.len() == 3 {
+            let filename = parts[1];
+            let flag = parts[2];
+            let format = match flag {
+                "--color" => graphics::ExportFormat::Color,
+                "--html" => graphics::ExportFormat::Html,
+                _ => graphics::ExportFormat::Plain,
+            };
+            (filename.to_string(), format)
+        } else {
+            // Fallback to default
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (format!("altostratus_export_{}.txt", timestamp), graphics::ExportFormat::Plain)
+        }
+    }
+
     fn get_display_text(&self) -> String {
         if let Some(ref error) = self.error_message {
             format!("ERROR: {} (press ESC to continue)", error)
+        } else if let Some(ref success) = self.success_message {
+            format!("SUCCESS: {} (press ESC to continue)", success)
         } else {
             format!("Command: {}_", self.buffer)
         }
+    }
+
+    fn has_message(&self) -> bool {
+        self.error_message.is_some() || self.success_message.is_some()
+    }
+
+    fn clear_messages(&mut self) {
+        self.error_message = None;
+        self.success_message = None;
     }
 }
 
@@ -216,10 +303,14 @@ fn run_application(file_paths: Vec<String>) {
                             // Handle command mode input
                             match key_event.code {
                                 event::KeyCode::Esc => {
-                                    command_state.exit_command_mode();
+                                    if command_state.has_message() {
+                                        command_state.clear_messages();
+                                    } else {
+                                        command_state.exit_command_mode();
+                                    }
                                 }
                                 event::KeyCode::Enter => {
-                                    command_state.execute_command(&mut point_cloud);
+                                    command_state.execute_command(&mut point_cloud, &camera);
                                 }
                                 event::KeyCode::Backspace => {
                                     command_state.backspace();
