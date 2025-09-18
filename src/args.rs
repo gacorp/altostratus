@@ -92,6 +92,7 @@ pub fn print_detailed_help() {
 \x1b[1mCommands\x1b[0m:
     /load <filepath>: Load additional point cloud file
     /clear: Remove all loaded points from the visualization
+    /export [filepath]: Export current view to text file (default: altostratus_export_<timestamp>.txt)
 ";
 
     print!("{}", HELP_MSG);

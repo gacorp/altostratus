@@ -25,6 +25,7 @@ struct CommandState {
     active: bool,
     buffer: String,
     error_message: Option<String>,
+    success_message: Option<String>,
 }
 
 impl CommandState {
@@ -33,6 +34,7 @@ impl CommandState {
             active: false,
             buffer: String::new(),
             error_message: None,
+            success_message: None,
         }
     }
 
@@ -40,6 +42,7 @@ impl CommandState {
         self.active = true;
         self.buffer.clear();
         self.error_message = None;
+        self.success_message = None;
     }
 
     fn exit_command_mode(&mut self) {
@@ -55,7 +58,7 @@ impl CommandState {
         self.buffer.pop();
     }
 
-    fn execute_command(&mut self, point_cloud: &mut PointCloud) -> bool {
+    fn execute_command(&mut self, point_cloud: &mut PointCloud, camera: &Camera) -> bool {
         let command = self.buffer.trim();
 
         if command.starts_with("load ") {
@@ -81,6 +84,38 @@ impl CommandState {
                     return false;
                 }
             }
+        } else if command.starts_with("export ") {
+            let path = command.strip_prefix("export ").unwrap().trim();
+            match self.export_view(camera, path) {
+                Ok(_) => {
+                    self.success_message = Some(format!("Exported to: {}", path));
+                    self.exit_command_mode();
+                    return false;
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Export failed: {}", e));
+                    return false;
+                }
+            }
+        } else if command == "export" {
+            // Default export filename with timestamp
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let default_path = format!("altostratus_export_{}.txt", timestamp);
+            
+            match self.export_view(camera, &default_path) {
+                Ok(_) => {
+                    self.success_message = Some(format!("Exported to: {}", default_path));
+                    self.exit_command_mode();
+                    return false;
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Export failed: {}", e));
+                    return false;
+                }
+            }
         } else if command == "clear" {
             // Clear all points from the point cloud
             point_cloud.points.clear();
@@ -98,12 +133,29 @@ impl CommandState {
         false
     }
 
+    fn export_view(&self, camera: &Camera, path: &str) -> Result<(), Box<dyn error::Error>> {
+        let content = camera.screen.export_to_string();
+        fs::write(path, content)?;
+        Ok(())
+    }
+
     fn get_display_text(&self) -> String {
         if let Some(ref error) = self.error_message {
             format!("ERROR: {} (press ESC to continue)", error)
+        } else if let Some(ref success) = self.success_message {
+            format!("SUCCESS: {} (press ESC to continue)", success)
         } else {
             format!("Command: {}_", self.buffer)
         }
+    }
+
+    fn has_message(&self) -> bool {
+        self.error_message.is_some() || self.success_message.is_some()
+    }
+
+    fn clear_messages(&mut self) {
+        self.error_message = None;
+        self.success_message = None;
     }
 }
 
@@ -216,10 +268,14 @@ fn run_application(file_paths: Vec<String>) {
                             // Handle command mode input
                             match key_event.code {
                                 event::KeyCode::Esc => {
-                                    command_state.exit_command_mode();
+                                    if command_state.has_message() {
+                                        command_state.clear_messages();
+                                    } else {
+                                        command_state.exit_command_mode();
+                                    }
                                 }
                                 event::KeyCode::Enter => {
-                                    command_state.execute_command(&mut point_cloud);
+                                    command_state.execute_command(&mut point_cloud, &camera);
                                 }
                                 event::KeyCode::Backspace => {
                                     command_state.backspace();

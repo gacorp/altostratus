@@ -382,6 +382,241 @@ impl Screen {
         // Output everything at once instead of many small writes
         execute!(io::stdout(), style::Print(output)).unwrap();
     }
+
+    pub fn export_to_string(&self) -> String {
+        // First, generate the full output like in render()
+        let chunked_rows = self.content.chunks(4);
+        let chunked_color_rows = self.colors.chunks(4);
+
+        let mut rows_output = Vec::new();
+        let mut current_color = Color::Default;
+
+        for (subrows, color_subrows) in chunked_rows.zip(chunked_color_rows) {
+            let real_row_width = self.width.div_ceil(2) as usize;
+            let mut real_row = vec![BraillePixel::new(); real_row_width];
+            let mut real_row_colors = vec![Color::Default; real_row_width];
+
+            for (subpixel_y, (subrow, color_subrow)) in
+                subrows.iter().zip(color_subrows.iter()).enumerate()
+            {
+                let chunked_subrow = subrow.chunks_exact(2);
+                let remainder = chunked_subrow.remainder();
+
+                let chunked_color_subrow = color_subrow.chunks_exact(2);
+                let color_remainder = chunked_color_subrow.remainder();
+
+                for (real_x, (pixel_row, color_row)) in
+                    chunked_subrow.zip(chunked_color_subrow).enumerate()
+                {
+                    if real_x < real_row_width {
+                        real_row[real_x][subpixel_y][..pixel_row.len()].copy_from_slice(pixel_row);
+
+                        // Determine dominant color for this Braille character section
+                        if real_row_colors[real_x] == Color::Default {
+                            // Find the first non-default color in this section
+                            for (pixel_set, &color) in pixel_row.iter().zip(color_row.iter()) {
+                                if *pixel_set && color != Color::Default {
+                                    real_row_colors[real_x] = color;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Handle remainder
+                if real_row_width > 0 && !remainder.is_empty() {
+                    real_row[real_row_width - 1][subpixel_y][..remainder.len()]
+                        .copy_from_slice(remainder);
+
+                    // Handle color remainder
+                    if !color_remainder.is_empty()
+                        && real_row_colors[real_row_width - 1] == Color::Default
+                    {
+                        for (pixel_set, &color) in remainder.iter().zip(color_remainder.iter()) {
+                            if *pixel_set && color != Color::Default {
+                                real_row_colors[real_row_width - 1] = color;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Build row string with color changes
+            let mut row_string = String::new();
+            for (pixel, &pixel_color) in real_row.iter().zip(real_row_colors.iter()) {
+                // Only change color if it's different from current
+                if pixel_color != current_color {
+                    let color_code = match pixel_color {
+                        Color::Default => "\x1b[39m".to_string(),
+                        Color::Black => "\x1b[30m".to_string(),
+                        Color::Red => "\x1b[31m".to_string(),
+                        Color::Green => "\x1b[32m".to_string(),
+                        Color::Yellow => "\x1b[33m".to_string(),
+                        Color::Blue => "\x1b[34m".to_string(),
+                        Color::Magenta => "\x1b[35m".to_string(),
+                        Color::Cyan => "\x1b[36m".to_string(),
+                        Color::White => "\x1b[37m".to_string(),
+                    };
+                    row_string.push_str(&color_code);
+                    current_color = pixel_color;
+                }
+
+                row_string.push(pixel.to_char());
+            }
+            rows_output.push(row_string);
+        }
+
+        // Reset color at the end if needed
+        if current_color != Color::Default {
+            if let Some(last_row) = rows_output.last_mut() {
+                last_row.push_str("\x1b[39m"); // Reset to default color
+            }
+        }
+
+        // Now trim the output with 2-character margin
+        self.trim_output_with_margin(rows_output, 2)
+    }
+
+    fn trim_output_with_margin(&self, rows: Vec<String>, margin: usize) -> String {
+        if rows.is_empty() {
+            return String::new();
+        }
+
+        // Find content bounds (ignoring ANSI color codes)
+        let mut top_bound = None;
+        let mut bottom_bound = None;
+        let mut left_bound = None;
+        let mut right_bound = None;
+
+        // Find top and bottom bounds
+        for (row_idx, row) in rows.iter().enumerate() {
+            if self.row_has_content(row) {
+                if top_bound.is_none() {
+                    top_bound = Some(row_idx);
+                }
+                bottom_bound = Some(row_idx);
+            }
+        }
+
+        // If no content found, return empty string
+        let (top, bottom) = match (top_bound, bottom_bound) {
+            (Some(t), Some(b)) => (t, b),
+            _ => return String::new(),
+        };
+
+        // Find left and right bounds
+        for row in &rows[top..=bottom] {
+            let (left, right) = self.find_row_content_bounds(row);
+            if let (Some(l), Some(r)) = (left, right) {
+                left_bound = Some(left_bound.map_or(l, |current: usize| current.min(l)));
+                right_bound = Some(right_bound.map_or(r, |current: usize| current.max(r)));
+            }
+        }
+
+        let (left, right) = match (left_bound, right_bound) {
+            (Some(l), Some(r)) => (l, r),
+            _ => return String::new(),
+        };
+
+        // Apply margins (but don't go negative)
+        let final_top = top.saturating_sub(margin);
+        let final_bottom = (bottom + margin).min(rows.len() - 1);
+        let final_left = left.saturating_sub(margin);
+        let final_right = right + margin;
+
+        // Extract the trimmed region
+        let mut result = String::new();
+        for row in &rows[final_top..=final_bottom] {
+            let trimmed_row = self.substring_with_ansi(row, final_left, final_right);
+            result.push_str(&trimmed_row);
+            result.push('\n');
+        }
+
+        result
+    }
+
+    fn row_has_content(&self, row: &str) -> bool {
+        // Check if row has any non-space Braille characters (ignoring ANSI codes)
+        let mut chars = row.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                // Skip ANSI escape sequence
+                while let Some(ch) = chars.next() {
+                    if ch == 'm' {
+                        break;
+                    }
+                }
+            } else if ch != ' ' && ch != '⠀' {
+                // ⠀ is the empty Braille character (U+2800)
+                return true;
+            }
+        }
+        false
+    }
+
+    fn find_row_content_bounds(&self, row: &str) -> (Option<usize>, Option<usize>) {
+        let mut char_positions = Vec::new();
+        let mut chars = row.chars().peekable();
+        let mut pos = 0;
+
+        // Extract just the content characters (no ANSI codes)
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                // Skip ANSI escape sequence
+                while let Some(ch) = chars.next() {
+                    if ch == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                char_positions.push((pos, ch));
+                pos += 1;
+            }
+        }
+
+        let mut left = None;
+        let mut right = None;
+
+        for (pos, ch) in char_positions {
+            if ch != ' ' && ch != '⠀' {
+                // ⠀ is the empty Braille character (U+2800)
+                if left.is_none() {
+                    left = Some(pos);
+                }
+                right = Some(pos);
+            }
+        }
+
+        (left, right)
+    }
+
+    fn substring_with_ansi(&self, text: &str, start: usize, end: usize) -> String {
+        let mut result = String::new();
+        let mut chars = text.chars().peekable();
+        let mut pos = 0;
+        let mut in_ansi = false;
+
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                in_ansi = true;
+                result.push(ch);
+            } else if in_ansi {
+                result.push(ch);
+                if ch == 'm' {
+                    in_ansi = false;
+                }
+            } else {
+                if pos >= start && pos <= end {
+                    result.push(ch);
+                }
+                pos += 1;
+            }
+        }
+
+        result
+    }
 }
 
 pub struct Camera {
