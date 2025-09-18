@@ -84,30 +84,16 @@ impl CommandState {
                     return false;
                 }
             }
-        } else if command.starts_with("export ") {
-            let path = command.strip_prefix("export ").unwrap().trim();
-            match self.export_view(camera, path) {
+        } else if command.starts_with("export") {
+            let (path, format) = self.parse_export_command(command);
+            match self.export_view(camera, &path, format) {
                 Ok(_) => {
-                    self.success_message = Some(format!("Exported to: {}", path));
-                    self.exit_command_mode();
-                    return false;
-                }
-                Err(e) => {
-                    self.error_message = Some(format!("Export failed: {}", e));
-                    return false;
-                }
-            }
-        } else if command == "export" {
-            // Default export filename with timestamp
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            let default_path = format!("altostratus_export_{}.txt", timestamp);
-            
-            match self.export_view(camera, &default_path) {
-                Ok(_) => {
-                    self.success_message = Some(format!("Exported to: {}", default_path));
+                    let format_desc = match format {
+                        graphics::ExportFormat::Plain => "plain text",
+                        graphics::ExportFormat::Color => "colored text",
+                        graphics::ExportFormat::Html => "HTML",
+                    };
+                    self.success_message = Some(format!("Exported {} to: {}", format_desc, path));
                     self.exit_command_mode();
                     return false;
                 }
@@ -133,10 +119,59 @@ impl CommandState {
         false
     }
 
-    fn export_view(&self, camera: &Camera, path: &str) -> Result<(), Box<dyn error::Error>> {
-        let content = camera.screen.export_to_string();
+    fn export_view(&self, camera: &Camera, path: &str, format: graphics::ExportFormat) -> Result<(), Box<dyn error::Error>> {
+        let content = camera.screen.export_to_string(format);
         fs::write(path, content)?;
         Ok(())
+    }
+
+    fn parse_export_command(&self, command: &str) -> (String, graphics::ExportFormat) {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        
+        if parts.len() == 1 {
+            // Just "/export" - default format (plain) with timestamp
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (format!("altostratus_export_{}.txt", timestamp), graphics::ExportFormat::Plain)
+        } else if parts.len() == 2 {
+            let arg = parts[1];
+            if arg == "--color" {
+                // "/export --color" - color format with timestamp
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                (format!("altostratus_export_color_{}.txt", timestamp), graphics::ExportFormat::Color)
+            } else if arg == "--html" {
+                // "/export --html" - HTML format with timestamp
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                (format!("altostratus_export_{}.html", timestamp), graphics::ExportFormat::Html)
+            } else {
+                // "/export filename" - assume plain format
+                (arg.to_string(), graphics::ExportFormat::Plain)
+            }
+        } else if parts.len() == 3 {
+            let filename = parts[1];
+            let flag = parts[2];
+            let format = match flag {
+                "--color" => graphics::ExportFormat::Color,
+                "--html" => graphics::ExportFormat::Html,
+                _ => graphics::ExportFormat::Plain,
+            };
+            (filename.to_string(), format)
+        } else {
+            // Fallback to default
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            (format!("altostratus_export_{}.txt", timestamp), graphics::ExportFormat::Plain)
+        }
     }
 
     fn get_display_text(&self) -> String {

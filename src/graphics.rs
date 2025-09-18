@@ -2,6 +2,14 @@ use crossterm::{cursor, execute, style, terminal};
 use std::ops;
 use std::*;
 
+// Export format enum
+#[derive(Clone, Copy, Debug)]
+pub enum ExportFormat {
+    Plain,    // No colors, just Braille characters
+    Color,    // ANSI color codes (current behavior)
+    Html,     // Self-contained HTML with inline styles
+}
+
 // Color definitions for ANSI 8-color support
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Color {
@@ -383,8 +391,55 @@ impl Screen {
         execute!(io::stdout(), style::Print(output)).unwrap();
     }
 
-    pub fn export_to_string(&self) -> String {
-        // First, generate the full output like in render()
+    pub fn export_to_string(&self, format: ExportFormat) -> String {
+        match format {
+            ExportFormat::Plain => self.export_plain(),
+            ExportFormat::Color => self.export_color(),
+            ExportFormat::Html => self.export_html(),
+        }
+    }
+
+    fn export_plain(&self) -> String {
+        // Similar to color export but strip all color information
+        let chunked_rows = self.content.chunks(4);
+
+        let mut rows_output = Vec::new();
+
+        for subrows in chunked_rows {
+            let real_row_width = self.width.div_ceil(2) as usize;
+            let mut real_row = vec![BraillePixel::new(); real_row_width];
+
+            for (subpixel_y, subrow) in subrows.iter().enumerate() {
+                let chunked_subrow = subrow.chunks_exact(2);
+                let remainder = chunked_subrow.remainder();
+
+                for (real_x, pixel_row) in chunked_subrow.enumerate() {
+                    if real_x < real_row_width {
+                        real_row[real_x][subpixel_y][..pixel_row.len()].copy_from_slice(pixel_row);
+                    }
+                }
+
+                // Handle remainder
+                if real_row_width > 0 && !remainder.is_empty() {
+                    real_row[real_row_width - 1][subpixel_y][..remainder.len()]
+                        .copy_from_slice(remainder);
+                }
+            }
+
+            // Build row string without any color codes
+            let mut row_string = String::new();
+            for pixel in real_row.iter() {
+                row_string.push(pixel.to_char());
+            }
+            rows_output.push(row_string);
+        }
+
+        // Trim the output with 2-character margin
+        self.trim_output_with_margin(rows_output, 2)
+    }
+
+    fn export_color(&self) -> String {
+        // This is the current export_to_string implementation
         let chunked_rows = self.content.chunks(4);
         let chunked_color_rows = self.colors.chunks(4);
 
@@ -475,8 +530,127 @@ impl Screen {
             }
         }
 
-        // Now trim the output with 2-character margin
+        // Trim the output with 2-character margin
         self.trim_output_with_margin(rows_output, 2)
+    }
+
+    fn export_html(&self) -> String {
+        // Generate HTML with inline styles for self-contained web embedding
+        let chunked_rows = self.content.chunks(4);
+        let chunked_color_rows = self.colors.chunks(4);
+
+        let mut rows_output = Vec::new();
+        let mut current_color = Color::Default;
+
+        for (subrows, color_subrows) in chunked_rows.zip(chunked_color_rows) {
+            let real_row_width = self.width.div_ceil(2) as usize;
+            let mut real_row = vec![BraillePixel::new(); real_row_width];
+            let mut real_row_colors = vec![Color::Default; real_row_width];
+
+            for (subpixel_y, (subrow, color_subrow)) in
+                subrows.iter().zip(color_subrows.iter()).enumerate()
+            {
+                let chunked_subrow = subrow.chunks_exact(2);
+                let remainder = chunked_subrow.remainder();
+
+                let chunked_color_subrow = color_subrow.chunks_exact(2);
+                let color_remainder = chunked_color_subrow.remainder();
+
+                for (real_x, (pixel_row, color_row)) in
+                    chunked_subrow.zip(chunked_color_subrow).enumerate()
+                {
+                    if real_x < real_row_width {
+                        real_row[real_x][subpixel_y][..pixel_row.len()].copy_from_slice(pixel_row);
+
+                        // Determine dominant color for this Braille character section
+                        if real_row_colors[real_x] == Color::Default {
+                            // Find the first non-default color in this section
+                            for (pixel_set, &color) in pixel_row.iter().zip(color_row.iter()) {
+                                if *pixel_set && color != Color::Default {
+                                    real_row_colors[real_x] = color;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Handle remainder
+                if real_row_width > 0 && !remainder.is_empty() {
+                    real_row[real_row_width - 1][subpixel_y][..remainder.len()]
+                        .copy_from_slice(remainder);
+
+                    // Handle color remainder
+                    if !color_remainder.is_empty()
+                        && real_row_colors[real_row_width - 1] == Color::Default
+                    {
+                        for (pixel_set, &color) in remainder.iter().zip(color_remainder.iter()) {
+                            if *pixel_set && color != Color::Default {
+                                real_row_colors[real_row_width - 1] = color;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Build row string with HTML span tags
+            let mut row_string = String::new();
+            let mut span_open = false;
+            
+            for (pixel, &pixel_color) in real_row.iter().zip(real_row_colors.iter()) {
+                // Handle color changes with HTML spans
+                if pixel_color != current_color {
+                    // Close previous span if open
+                    if span_open {
+                        row_string.push_str("</span>");
+                        span_open = false;
+                    }
+                    
+                    // Open new span if color is not default
+                    if pixel_color != Color::Default {
+                        let color_style = match pixel_color {
+                            Color::Black => "color: #000000",
+                            Color::Red => "color: #ff0000",
+                            Color::Green => "color: #00ff00",
+                            Color::Yellow => "color: #ffff00",
+                            Color::Blue => "color: #0000ff",
+                            Color::Magenta => "color: #ff00ff",
+                            Color::Cyan => "color: #00ffff",
+                            Color::White => "color: #ffffff",
+                            Color::Default => "", // This case won't be reached due to the outer if condition
+                        };
+                        row_string.push_str(&format!("<span style=\"{}\">", color_style));
+                        span_open = true;
+                    }
+                    current_color = pixel_color;
+                }
+
+                // Escape HTML special characters in Braille characters (though they're unlikely)
+                let char_str = pixel.to_char().to_string();
+                let escaped = char_str
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;");
+                row_string.push_str(&escaped);
+            }
+            
+            // Close span at end of row if open
+            if span_open {
+                row_string.push_str("</span>");
+            }
+            
+            rows_output.push(row_string);
+        }
+
+        // Trim the content first
+        let trimmed_content = self.trim_output_with_margin(rows_output, 2);
+        
+        // Wrap in a complete HTML structure for easy embedding
+        format!(
+            "<pre style=\"font-family: monospace; line-height: 1; background-color: #000000; color: #ffffff; padding: 10px; margin: 0; white-space: pre; overflow-x: auto;\">{}</pre>",
+            trimmed_content
+        )
     }
 
     fn trim_output_with_margin(&self, rows: Vec<String>, margin: usize) -> String {
